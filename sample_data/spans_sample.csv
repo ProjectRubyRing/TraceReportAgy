@@ -1,0 +1,18 @@
+timestamp,trace_id,span_id,parent_span_id,service_name,operation_name,duration_ms,duration_nano,http_status,http_method,http_url,status_code,status_message,kind
+2026-10-26 04:30:00.000,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60001,,order-frontend,POST /api/checkout,320.00,320000000,200,POST,https://api.example.com/api/checkout,OK,,SERVER
+2026-10-26 04:30:00.010,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60002,a1b2c3d4e5f60001,order-frontend,CallAuthService,45.00,45000000,200,POST,http://auth.internal/verify,OK,,CLIENT
+2026-10-26 04:30:00.012,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60003,a1b2c3d4e5f60002,auth-service,POST /verify,40.00,40000000,200,POST,/verify,OK,,SERVER
+2026-10-26 04:30:00.018,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60004,a1b2c3d4e5f60003,auth-service,DynamoDB:GetItem (users),18.00,18000000,,,aws:dynamodb:GetItem,OK,,CLIENT
+2026-10-26 04:30:00.060,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60005,a1b2c3d4e5f60001,order-frontend,CallInventoryService,60.00,60000000,200,POST,http://inventory.internal/stock/reserve,OK,,CLIENT
+2026-10-26 04:30:00.062,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60006,a1b2c3d4e5f60005,inventory-service,POST /stock/reserve,55.00,55000000,200,POST,/stock/reserve,OK,,SERVER
+2026-10-26 04:30:00.070,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60007,a1b2c3d4e5f60006,inventory-service,DynamoDB:UpdateItem (stock),30.00,30000000,,,aws:dynamodb:UpdateItem,OK,,CLIENT
+2026-10-26 04:30:00.125,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60008,a1b2c3d4e5f60001,order-frontend,CallPaymentService,150.00,150000000,200,POST,http://payment.internal/charge,OK,,CLIENT
+2026-10-26 04:30:00.128,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60009,a1b2c3d4e5f60008,payment-service,POST /charge,145.00,145000000,200,POST,/charge,OK,,SERVER
+2026-10-26 04:30:00.140,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60010,a1b2c3d4e5f60009,payment-service,Stripe: POST /v1/charges,110.00,110000000,200,POST,https://api.stripe.com/v1/charges,OK,,CLIENT
+2026-10-26 04:30:00.252,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60011,a1b2c3d4e5f60009,payment-service,RDS: INSERT transactions,20.00,20000000,,,aurora-postgres:5432,OK,,CLIENT
+2026-10-26 04:30:00.280,1-671c6d1f-8181283921839182391283,a1b2c3d4e5f60012,a1b2c3d4e5f60001,order-frontend,CallNotificationService,30.00,30000000,200,POST,aws:sqs:SendMessage,OK,,CLIENT
+2026-10-26 04:30:05.100,1-671c6d20-9999111122223333444455,b2c3d4e5f6a10001,,order-frontend,POST /api/checkout,520.00,520000000,500,POST,https://api.example.com/api/checkout,ERROR,Internal Server Error,SERVER
+2026-10-26 04:30:05.110,1-671c6d20-9999111122223333444455,b2c3d4e5f6a10002,b2c3d4e5f6a10001,order-frontend,CallPaymentService,480.00,480000000,500,POST,http://payment.internal/charge,ERROR,Downstream payment fault,CLIENT
+2026-10-26 04:30:05.115,1-671c6d20-9999111122223333444455,b2c3d4e5f6a10003,b2c3d4e5f6a10002,payment-service,POST /charge,470.00,470000000,500,POST,/charge,ERROR,Gateway Timeout (HTTP 504),SERVER
+2026-10-26 04:30:05.130,1-671c6d20-9999111122223333444455,b2c3d4e5f6a10004,b2c3d4e5f6a10003,payment-service,Stripe: POST /v1/charges,450.00,450000000,504,POST,https://api.stripe.com/v1/charges,ERROR,Connection timed out after 450ms,CLIENT
+2026-10-26 04:30:10.000,1-671c6d21-44443333222211110000aa,c3d4e5f6a1b20001,,catalog-service,GET /products/unknown-999,15.00,15000000,404,GET,https://api.example.com/products/unknown-999,ERROR,Product not found,SERVER

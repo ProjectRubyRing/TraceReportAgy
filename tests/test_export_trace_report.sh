@@ -107,6 +107,164 @@ else
     fail "CSV line count expected 18, got $LINE_COUNT."
 fi
 
+# ==============================================================================
+# Switchback and Permission Testing with Mock AWS CLI
+# ==============================================================================
+echo ""
+echo "--- Setting up Mock AWS CLI environment for Switchback Testing ---"
+MOCK_BIN="${TEST_OUTPUT_DIR}/mock_bin"
+mkdir -p "$MOCK_BIN"
+SAMPLE_JSON="${SCRIPT_DIR}/sample_data/spans_query_result.json"
+MOCK_SW_SCRIPT="${TEST_OUTPUT_DIR}/test_switchback.sh"
+
+cat << 'EOF' > "$MOCK_SW_SCRIPT"
+#!/usr/bin/env bash
+export MOCK_SWITCHBACK_EXECUTED=1
+export AWS_PROFILE="switched-ops-profile"
+echo "[MOCK_SWITCHBACK] Dedicated switchback shell sourced successfully."
+EOF
+chmod +x "$MOCK_SW_SCRIPT"
+
+cat << EOF > "${MOCK_BIN}/aws"
+#!/usr/bin/env bash
+if [ "\$1" = "sts" ] && [ "\$2" = "get-caller-identity" ]; then
+    if [ "\${MOCK_SCENARIO:-}" = "unauthenticated" ]; then
+        echo "An error occurred (ExpiredToken): The security token included in the request is expired" >&2
+        exit 254
+    elif [ "\${MOCK_SCENARIO:-}" = "codecommit_role" ]; then
+        echo '{"UserId": "AROAEXAMPLE", "Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/CodeCommit-Dev-Role/session"}'
+        exit 0
+    elif [ "\${MOCK_SCENARIO:-}" = "switchback_success" ]; then
+        if [ "\${MOCK_SWITCHBACK_EXECUTED:-0}" = "1" ]; then
+            echo '{"UserId": "AROAEXAMPLE", "Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/Operations-Role/session"}'
+            exit 0
+        else
+            echo '{"UserId": "AROAEXAMPLE", "Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/CodeCommit-Dev-Role/session"}'
+            exit 0
+        fi
+    else
+        echo '{"UserId": "AROAEXAMPLE", "Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/AppSignals-Operator/session"}'
+        exit 0
+    fi
+fi
+
+if [ "\$1" = "logs" ] && [ "\$2" = "describe-log-groups" ]; then
+    if [ "\${MOCK_SCENARIO:-}" = "permission_denied" ] || [ "\${MOCK_SCENARIO:-}" = "codecommit_role" ]; then
+        echo "An error occurred (AccessDeniedException): User is not authorized to perform: logs:DescribeLogGroups on resource: *" >&2
+        exit 254
+    elif [ "\${MOCK_SCENARIO:-}" = "switchback_success" ]; then
+        if [ "\${MOCK_SWITCHBACK_EXECUTED:-0}" = "1" ]; then
+            echo '{"logGroups": [{"logGroupName": "aws/spans"}]}'
+            exit 0
+        else
+            echo "An error occurred (AccessDeniedException): User is not authorized to perform: logs:DescribeLogGroups" >&2
+            exit 254
+        fi
+    elif [ "\${MOCK_SCENARIO:-}" = "switchback_still_denied" ]; then
+        echo "An error occurred (AccessDeniedException): Still denied after switchback" >&2
+        exit 254
+    else
+        echo '{"logGroups": [{"logGroupName": "aws/spans"}]}'
+        exit 0
+    fi
+fi
+
+if [ "\$1" = "logs" ] && [ "\$2" = "start-query" ]; then
+    echo '{"queryId": "mock-query-id-test-12345"}'
+    exit 0
+fi
+
+if [ "\$1" = "logs" ] && [ "\$2" = "get-query-results" ]; then
+    cat "$SAMPLE_JSON"
+    exit 0
+fi
+
+echo "Mock aws unhandled invocation: \$*" >&2
+exit 1
+EOF
+chmod +x "${MOCK_BIN}/aws"
+
+# Test 8: CLI options check in help message
+echo "Running Test 8: CLI options for switchback present in --help..."
+HELP_FULL="$(bash "$BIN_PATH" --help)"
+if echo "$HELP_FULL" | grep -q -- "--auto-switchback" && echo "$HELP_FULL" | grep -q -- "--switchback-script"; then
+    pass "Help message contains --auto-switchback and --switchback-script options."
+else
+    fail "Help message missing switchback CLI options."
+fi
+
+# Test 9: Unauthenticated scenario -> Exit 1
+echo "Running Test 9: Unauthenticated session detection..."
+set +e
+UNAUTH_OUT="$(PATH="${MOCK_BIN}:${PATH}" MOCK_SCENARIO="unauthenticated" bash "$BIN_PATH" -s 1h -o "$TEST_OUTPUT_DIR" 2>&1)"
+UNAUTH_RET=$?
+set -e
+if [[ $UNAUTH_RET -eq 1 ]] && echo "$UNAUTH_OUT" | grep -q "AWS にログインされていないか"; then
+    pass "Unauthenticated scenario correctly exited with code 1 and login prompt."
+else
+    fail "Unauthenticated scenario did not exit with code 1. Code: $UNAUTH_RET, Out: $UNAUTH_OUT"
+fi
+
+# Test 10: Permission denied, auto-switchback disabled -> Exit 2, warning message to switch back
+echo "Running Test 10: Permission denied with switchback warning (auto-switchback disabled)..."
+set +e
+DENIED_OUT="$(PATH="${MOCK_BIN}:${PATH}" MOCK_SCENARIO="codecommit_role" bash "$BIN_PATH" -s 1h -S "$MOCK_SW_SCRIPT" -o "$TEST_OUTPUT_DIR" 2>&1)"
+DENIED_RET=$?
+set -e
+if [[ $DENIED_RET -eq 2 ]] && echo "$DENIED_OUT" | grep -q "スイッチバック警告" && echo "$DENIED_OUT" | grep -q "codecommit"; then
+    pass "Permission denied with switchback warning correctly warned and exited with code 2."
+else
+    fail "Permission denied test failed. Code: $DENIED_RET, Out: $DENIED_OUT"
+fi
+
+# Test 11: Auto-switchback enabled -> Auto source switchback script, Exit 0 and complete
+echo "Running Test 11: Auto-switchback execution and recovery (--auto-switchback)..."
+set +e
+SW_SUCCESS_OUT="$(PATH="${MOCK_BIN}:${PATH}" MOCK_SCENARIO="switchback_success" MOCK_SAMPLE_JSON="$SAMPLE_JSON" bash "$BIN_PATH" -s 1h -a -S "$MOCK_SW_SCRIPT" -o "$TEST_OUTPUT_DIR" 2>&1)"
+SW_SUCCESS_RET=$?
+set -e
+if [[ $SW_SUCCESS_RET -eq 0 ]] && echo "$SW_SUCCESS_OUT" | grep -q "スイッチバックに成功しました" && echo "$SW_SUCCESS_OUT" | grep -q "TRACE REPORT COMPLETED SUCCESSFULLY"; then
+    pass "Auto-switchback automatically sourced script, recovered permissions, and generated report (exit code 0)."
+else
+    fail "Auto-switchback execution failed. Code: $SW_SUCCESS_RET, Out: $SW_SUCCESS_OUT"
+fi
+
+# Test 12: Auto-switchback enabled but script does not exist -> Exit 3
+echo "Running Test 12: Switchback script missing detection..."
+set +e
+MISSING_SW_OUT="$(PATH="${MOCK_BIN}:${PATH}" MOCK_SCENARIO="switchback_success" bash "$BIN_PATH" -s 1h -a -S "${TEST_OUTPUT_DIR}/non_existent_switchback.sh" -o "$TEST_OUTPUT_DIR" 2>&1)"
+MISSING_SW_RET=$?
+set -e
+if [[ $MISSING_SW_RET -eq 3 ]] && echo "$MISSING_SW_OUT" | grep -q "スイッチバック用シェルが存在しません"; then
+    pass "Missing switchback script correctly detected with exit code 3."
+else
+    fail "Missing switchback script test failed. Code: $MISSING_SW_RET, Out: $MISSING_SW_OUT"
+fi
+
+# Test 13: Auto-switchback executed but permissions still denied -> Exit 4
+echo "Running Test 13: Auto-switchback executed but permissions still denied..."
+set +e
+STILL_DENIED_OUT="$(PATH="${MOCK_BIN}:${PATH}" MOCK_SCENARIO="switchback_still_denied" bash "$BIN_PATH" -s 1h -a -S "$MOCK_SW_SCRIPT" -o "$TEST_OUTPUT_DIR" 2>&1)"
+STILL_DENIED_RET=$?
+set -e
+if [[ $STILL_DENIED_RET -eq 4 ]] && echo "$STILL_DENIED_OUT" | grep -q "依然として AWS 操作権限が不足しています"; then
+    pass "Permission still denied after switchback correctly exited with code 4."
+else
+    fail "Still denied test failed. Code: $STILL_DENIED_RET, Out: $STILL_DENIED_OUT"
+fi
+
+# Test 14: Environment variable AWS_SWITCHBACK_SCRIPT fallback
+echo "Running Test 14: Environment variable AWS_SWITCHBACK_SCRIPT resolution..."
+set +e
+ENV_SW_OUT="$(PATH="${MOCK_BIN}:${PATH}" MOCK_SCENARIO="codecommit_role" AWS_SWITCHBACK_SCRIPT="$MOCK_SW_SCRIPT" bash "$BIN_PATH" -s 1h -o "$TEST_OUTPUT_DIR" 2>&1)"
+ENV_SW_RET=$?
+set -e
+if [[ $ENV_SW_RET -eq 2 ]] && echo "$ENV_SW_OUT" | grep -q "$MOCK_SW_SCRIPT"; then
+    pass "Switchback script path correctly resolved from AWS_SWITCHBACK_SCRIPT environment variable."
+else
+    fail "AWS_SWITCHBACK_SCRIPT environment variable test failed. Code: $ENV_SW_RET, Out: $ENV_SW_OUT"
+fi
+
 echo "================================================="
 echo -e "${GREEN} ALL BASH TESTS PASSED SUCCESSFULLY! ${RESET}"
 echo "================================================="

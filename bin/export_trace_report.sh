@@ -45,6 +45,7 @@ DEFAULT_END_TIME="now"
 DEFAULT_OUTPUT_DIR="${SCRIPT_DIR}/output"
 DEFAULT_TEMPLATE_PATH="${SCRIPT_DIR}/templates/trace_report_template.xlsx"
 DEFAULT_LIMIT=10000
+DEFAULT_SWITCHBACK_SCRIPT="${AWS_SWITCHBACK_SCRIPT:-${SCRIPT_DIR}/switchback.sh}"
 
 LOG_GROUP="${DEFAULT_LOG_GROUP}"
 START_TIME_INPUT="${DEFAULT_START_TIME}"
@@ -59,6 +60,12 @@ AWS_PROFILE=""
 AWS_REGION=""
 DRY_RUN=0
 MOCK_MODE=0
+AUTO_SWITCHBACK=0
+SWITCHBACK_SCRIPT="${DEFAULT_SWITCHBACK_SCRIPT}"
+AWS_EXEC=""
+AWS_CMD_ARGS=()
+LAST_PERM_ERROR=""
+CURRENT_ARN=""
 
 # Usage documentation
 show_help() {
@@ -101,6 +108,16 @@ ${COLOR_BOLD}Options:${COLOR_RESET}
 
   -r, --region <REGION>     AWS region (e.g. ap-northeast-1, us-east-1).
 
+  -a, --auto-switchback     Automatically execute switchback script when AWS operation
+                            permissions are insufficient, instead of warning and exiting.
+
+      --no-auto-switchback  Warn and exit when AWS operation permissions are insufficient
+                            (Default behavior).
+
+  -S, --switchback-script <PATH>
+                            File path to the dedicated switchback shell script.
+                            (Default: ${AWS_SWITCHBACK_SCRIPT:-${SCRIPT_DIR}/switchback.sh})
+
       --template <PATH>     Path to custom Excel template.
                             (Default: "${DEFAULT_TEMPLATE_PATH}")
 
@@ -128,6 +145,9 @@ ${COLOR_BOLD}Examples:${COLOR_RESET}
 
   # 5. Offline test using mock data
   ${BIN_NAME} --mock
+
+  # 6. Execute with auto-switchback enabled and specified switchback script path
+  ${BIN_NAME} -s 1h -a -S "/opt/ops/switchback.sh"
 EOF
 }
 
@@ -153,6 +173,14 @@ parse_arguments() {
                 AWS_PROFILE="$2"; shift 2 ;;
             -r|--region)
                 AWS_REGION="$2"; shift 2 ;;
+            -a|--auto-switchback)
+                AUTO_SWITCHBACK=1; shift ;;
+            --no-auto-switchback)
+                AUTO_SWITCHBACK=0; shift ;;
+            -S|--switchback-script|--switchback-path)
+                SWITCHBACK_SCRIPT="$2"; shift 2 ;;
+            --switchback-script=*|--switchback-path=*)
+                SWITCHBACK_SCRIPT="${1#*=}"; shift ;;
             --template)
                 TEMPLATE_PATH="$2"; shift 2 ;;
             --limit)
@@ -334,6 +362,29 @@ check_aws_cli() {
     fi
 }
 
+# Construct AWS CLI arguments based on current profile/region configuration
+build_aws_cmd_args() {
+    AWS_CMD_ARGS=()
+    local reg="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+    if [[ -n "$reg" ]]; then
+        AWS_CMD_ARGS+=(--region "$reg")
+    fi
+    if [[ -n "${AWS_PROFILE:-}" ]]; then
+        AWS_CMD_ARGS+=(--profile "$AWS_PROFILE")
+    fi
+}
+
+# Check CloudWatch Logs operation permissions
+check_aws_permissions() {
+    local perm_out
+    set +e
+    perm_out="$("$AWS_EXEC" logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --max-items 1 "${AWS_CMD_ARGS[@]}" 2>&1)"
+    local perm_exit=$?
+    set -e
+    LAST_PERM_ERROR="$perm_out"
+    return $perm_exit
+}
+
 # Build CloudWatch Logs Insights query string
 build_query_string() {
     if [[ -n "$CUSTOM_QUERY" ]]; then
@@ -392,6 +443,9 @@ main() {
     log_info "Start Time:   ${START_ISO} (${START_EPOCH})"
     log_info "End Time:     ${END_ISO} (${END_EPOCH})"
     log_info "Output Dir:   ${OUTPUT_DIR}"
+    if [[ "$AUTO_SWITCHBACK" -eq 1 ]]; then
+        log_info "Auto Switch:  Enabled (Script: ${SWITCHBACK_SCRIPT})"
+    fi
     if [[ -n "$TRACE_ID" ]]; then
         log_info "Trace ID:     ${TRACE_ID}"
     fi
@@ -433,13 +487,123 @@ main() {
         cp "$SAMPLE_JSON" "$JSON_OUT_PATH"
         log_info "Loaded mock query results into: ${JSON_OUT_PATH}"
     else
-        # Prepare AWS CLI arguments
-        AWS_CMD_ARGS=()
-        if [[ -n "$AWS_REGION" ]]; then
-            AWS_CMD_ARGS+=(--region "$AWS_REGION")
+        build_aws_cmd_args
+
+        # 1. AWS Authentication Verification (aws sts get-caller-identity)
+        log_info "Verifying AWS authentication and identity (aws sts get-caller-identity)..."
+        set +e
+        STS_OUTPUT="$("$AWS_EXEC" sts get-caller-identity --output json "${AWS_CMD_ARGS[@]}" 2>&1)"
+        STS_EXIT=$?
+        set -e
+
+        if [[ $STS_EXIT -ne 0 ]]; then
+            echo ""
+            log_error "============================================================"
+            log_error "AWS にログインされていないか、認証トークンが無効です。"
+            log_error "エラー詳細: ${STS_OUTPUT}"
+            echo ""
+            log_error "事前に 'aws login --remote' 等の認証コマンドを実行して認証を完了させてください。"
+            log_error "============================================================"
+            exit 1
         fi
-        if [[ -n "$AWS_PROFILE" ]]; then
-            AWS_CMD_ARGS+=(--profile "$AWS_PROFILE")
+
+        CURRENT_ARN=$(echo "$STS_OUTPUT" | "$PYTHON_EXEC" -c "import sys, json; print(json.load(sys.stdin).get('Arn', 'Unknown'))" 2>/dev/null | tr -d '\r' || echo "Unknown")
+        log_info "AWS Identity ARN: ${COLOR_CYAN}${CURRENT_ARN}${COLOR_RESET}"
+
+        if echo "$CURRENT_ARN" | grep -qi "codecommit"; then
+            echo ""
+            log_warn "注意: 現在のARNに 'codecommit' が含まれています (${CURRENT_ARN})。"
+            log_warn "CodeCommit専用権限の場合、CloudWatch Logs等の各種AWS操作にはスイッチバックが必要です。"
+            echo ""
+        fi
+
+        # 2. Check AWS Operation Permissions (CloudWatch Logs) & Switchback Resolution
+        log_info "Checking AWS operation permissions (CloudWatch Logs: ${LOG_GROUP})..."
+        if ! check_aws_permissions; then
+            if [[ "$AUTO_SWITCHBACK" -eq 1 ]]; then
+                echo ""
+                log_warn "現在の操作権限では AWS (CloudWatch Logs) への操作が不可能です (AccessDenied)。"
+                log_info "'--auto-switchback' が有効なため、終了せずにスイッチバックを自動実行します..."
+
+                if [[ -z "$SWITCHBACK_SCRIPT" || ! -f "$SWITCHBACK_SCRIPT" ]]; then
+                    echo ""
+                    log_error "============================================================"
+                    log_error "スイッチバック用シェルが存在しません: '${SWITCHBACK_SCRIPT}'"
+                    log_error "専用シェルのファイル配置場所を '--switchback-script <PATH>' (-S) または環境変数 AWS_SWITCHBACK_SCRIPT で正しく指定してください。"
+                    log_error "============================================================"
+                    exit 3
+                fi
+
+                log_info "専用のスイッチバックシェルを source で呼び出します: ${SWITCHBACK_SCRIPT}"
+                set +eu
+                # shellcheck source=/dev/null
+                source "$SWITCHBACK_SCRIPT"
+                SWITCH_RET=$?
+                set -eu
+
+                if [[ $SWITCH_RET -ne 0 ]]; then
+                    echo ""
+                    log_error "============================================================"
+                    log_error "スイッチバックシェルの実行でエラーが発生しました (終了コード: ${SWITCH_RET})。"
+                    log_error "============================================================"
+                    exit 4
+                fi
+                log_info "スイッチバックシェルの読み込みが完了しました。"
+
+                # Rebuild CLI args in case environment variables (AWS_PROFILE, etc.) were updated
+                build_aws_cmd_args
+
+                # Log updated identity after switchback
+                set +e
+                RETRY_STS="$("$AWS_EXEC" sts get-caller-identity --output json "${AWS_CMD_ARGS[@]}" 2>&1)"
+                set -e
+                NEW_ARN=$(echo "$RETRY_STS" | "$PYTHON_EXEC" -c "import sys, json; print(json.load(sys.stdin).get('Arn', 'Unknown'))" 2>/dev/null | tr -d '\r' || echo "Unknown")
+                log_info "スイッチバック後の Identity ARN: ${COLOR_CYAN}${NEW_ARN}${COLOR_RESET}"
+
+                # Re-verify permissions
+                log_info "スイッチバック後の AWS 操作権限を再検証しています..."
+                if ! check_aws_permissions; then
+                    echo ""
+                    log_error "============================================================"
+                    log_error "スイッチバックを実行しましたが、依然として AWS 操作権限が不足しています。"
+                    log_error "エラー詳細: ${LAST_PERM_ERROR}"
+                    echo ""
+                    log_error "切り替え先ロールの権限やスイッチバックシェルの設定内容を確認してください。"
+                    log_error "============================================================"
+                    exit 4
+                fi
+                log_success "スイッチバックに成功しました！AWS 操作権限を確認しました。"
+            else
+                echo ""
+                echo -e "${COLOR_YELLOW}================================================================================${COLOR_RESET}"
+                log_warn "現在の操作権限では AWS (CloudWatch Logs) への操作が不可能です (AccessDenied)。"
+                if [[ -n "$CURRENT_ARN" && "$CURRENT_ARN" != "Unknown" ]]; then
+                    log_warn "現在の Identity ARN: ${CURRENT_ARN}"
+                fi
+                if echo "$CURRENT_ARN" | grep -qi "codecommit"; then
+                    log_warn "※ CodeCommit 専用の操作権限が適用されている可能性があります。"
+                fi
+                echo -e "エラー詳細: ${LAST_PERM_ERROR}"
+                echo ""
+                echo -e "${COLOR_BOLD}${COLOR_RED}[スイッチバック警告]${COLOR_RESET}"
+                echo -e "本ツールでは CodeCommit の操作は不要であり、各種 AWS (CloudWatch Logs) への操作権限が必要です。"
+                echo -e "別のチームが用意している専用のシェルを source してスイッチバックを実行してください。"
+                echo ""
+                if [[ -n "$SWITCHBACK_SCRIPT" ]]; then
+                    echo -e "  スイッチバック用シェル配置場所: ${COLOR_CYAN}${SWITCHBACK_SCRIPT}${COLOR_RESET}"
+                    echo -e "  手動実行例: ${COLOR_BOLD}${COLOR_CYAN}source \"${SWITCHBACK_SCRIPT}\"${COLOR_RESET}"
+                else
+                    echo -e "  手動実行例: ${COLOR_BOLD}${COLOR_CYAN}source <スイッチバック用シェルのパス>${COLOR_RESET}"
+                fi
+                echo ""
+                echo -e "${COLOR_BOLD}${COLOR_YELLOW}※ '--auto-switchback' (-a) オプションを指定すると、${COLOR_RESET}"
+                echo -e "${COLOR_BOLD}${COLOR_YELLOW}   終了せずに上記シェルを自動的に source してスイッチバックを実行し処理を継続できます。${COLOR_RESET}"
+                echo -e "${COLOR_BOLD}${COLOR_YELLOW}※ シェルの配置場所は '--switchback-script <PATH>' (-S) または環境変数 AWS_SWITCHBACK_SCRIPT で指定可能です。${COLOR_RESET}"
+                echo -e "${COLOR_YELLOW}================================================================================${COLOR_RESET}"
+                exit 2
+            fi
+        else
+            log_success "AWS 操作権限を確認しました (CloudWatch Logs: ${LOG_GROUP})。"
         fi
 
         log_info "Starting CloudWatch Logs Insights query..."
@@ -451,7 +615,7 @@ main() {
             "${AWS_CMD_ARGS[@]}" \
             --output json)"
 
-        QUERY_ID="$(echo "$START_RESP" | "$PYTHON_EXEC" -c "import sys, json; print(json.load(sys.stdin).get('queryId', ''))")"
+        QUERY_ID="$(echo "$START_RESP" | "$PYTHON_EXEC" -c "import sys, json; print(json.load(sys.stdin).get('queryId', ''))" | tr -d '\r')"
 
         if [[ -z "$QUERY_ID" ]]; then
             log_error "Failed to retrieve queryId from CloudWatch Logs. Response: $START_RESP"
@@ -469,7 +633,7 @@ main() {
 
         while [[ "$ELAPSED" -lt "$MAX_WAIT_SECONDS" ]]; do
             POLL_RESP="$("$AWS_EXEC" logs get-query-results --query-id "$QUERY_ID" "${AWS_CMD_ARGS[@]}" --output json)"
-            STATUS="$(echo "$POLL_RESP" | "$PYTHON_EXEC" -c "import sys, json; print(json.load(sys.stdin).get('status', 'Unknown'))")"
+            STATUS="$(echo "$POLL_RESP" | "$PYTHON_EXEC" -c "import sys, json; print(json.load(sys.stdin).get('status', 'Unknown'))" | tr -d '\r')"
 
             if [[ "$STATUS" == "Complete" ]]; then
                 echo "$POLL_RESP" > "$JSON_OUT_PATH"

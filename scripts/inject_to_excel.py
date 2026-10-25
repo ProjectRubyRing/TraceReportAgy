@@ -23,35 +23,42 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, Reference, Series
 
-# Palette matching AWS X-Ray / CloudWatch
-NAVY_HEADER = "1B2A4A"
-WHITE = "FFFFFF"
-GRAY_TEXT = "5A6A85"
-CARD_BG = "F8FAFC"
-CARD_BORDER = "E2E8F0"
-BORDER_LIGHT = "E5E7EB"
-BORDER_DARK = "CBD5E1"
+# Monotone Palette (Refined Executive Grayscale)
+HEADER_DARK = "212529"          # Deep Charcoal / Black for Titles & Primary Banners
+HEADER_MID = "343A40"           # Dark Slate Charcoal for Table Headers
+HEADER_SCALE = "495057"         # Slate Gray for Timeline Scale Headers
+WHITE = "FFFFFF"                # Crisp Pure White
+TEXT_MAIN = "212529"            # Primary Text Color
+TEXT_MUTED = "6C757D"           # Secondary / Muted Gray Text
+CARD_BG = "F8F9FA"              # Card Panel Soft Light Gray
+CARD_BORDER = "DEE2E6"          # Card Border Neutral Gray
+BORDER_LIGHT = "E9ECEF"         # Grid & Table Cell Inner Border
+BORDER_DARK = "CED4DA"          # Table Outer / Header Separator Border
 
-# Status colors
-SUCCESS_BG = "D1E7DD"
-SUCCESS_FG = "0F5132"
-SUCCESS_BAR = "34A853"   # Green
+# Backward-compatibility aliases
+NAVY_HEADER = HEADER_DARK
+GRAY_TEXT = TEXT_MUTED
 
-WARNING_BG = "FFF3CD"
-WARNING_FG = "664D03"
-WARNING_BAR = "FBBC05"   # Amber / Orange
+# Status Monotone Shades
+SUCCESS_BG = "E9ECEF"           # Light Silver Gray
+SUCCESS_FG = "212529"           # Dark Charcoal
+SUCCESS_BAR = "868E96"          # Medium Slate Gray for normal spans
 
-DANGER_BG = "F8D7DA"
-DANGER_FG = "842029"
-DANGER_BAR = "EA4335"    # Crimson Red
+WARNING_BG = "6C757D"           # Medium Charcoal Gray
+WARNING_FG = "FFFFFF"           # Crisp White
+WARNING_BAR = "495057"          # Dark Slate Gray for 4xx warning spans
 
-CLIENT_BAR = "4285F4"    # Blue for Client / DB
-INTERNAL_BAR = "9AA0A6"  # Gray for Internal
+DANGER_BG = "212529"            # Dark Charcoal Black
+DANGER_FG = "FFFFFF"            # Crisp White
+DANGER_BAR = "212529"           # Solid Black/Charcoal for 5xx fault spans
 
-TIMELINE_BG = "F1F5F9"
-ROW_ALT = "F8FAFC"
-ROW_WHITE = "FFFFFF"
-FONT_FAMILY = "Segoe UI"
+CLIENT_BAR = "6C757D"           # Medium Slate for Client / DB spans
+INTERNAL_BAR = "ADB5BD"         # Light Slate for Internal spans
+
+TIMELINE_BG = "F8F9FA"          # Empty timeline cell background
+ROW_ALT = "F8F9FA"              # Alternating row background
+ROW_WHITE = "FFFFFF"            # White row background
+FONT_FAMILY = "Meiryo UI"
 
 
 def create_thin_border(color=BORDER_LIGHT):
@@ -242,16 +249,35 @@ def populate_summary_sheet(ws, traces_dict: Dict[str, Dict[str, Any]], metadata:
 
     # Fill metadata
     ws["C4"].value = metadata.get("log_group", "aws/spans")
+    ws["C4"].font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
     ws["G4"].value = f"{metadata.get('start_time', 'N/A')}  ~  {metadata.get('end_time', 'N/A')}"
+    ws["G4"].font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
     ws["C5"].value = metadata.get("generated_at", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+    ws["C5"].font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
     ws["G5"].value = metadata.get("filter_criteria", "All Transactions")
+    ws["G5"].font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
 
     # Fill KPI Cards
     ws["B8"].value = total_traces
+    ws["B8"].font = Font(name=FONT_FAMILY, size=15, bold=True, color=TEXT_MAIN)
+
     ws["E8"].value = total_spans
+    ws["E8"].font = Font(name=FONT_FAMILY, size=15, bold=True, color=TEXT_MAIN)
+
     ws["H8"].value = ok_traces
+    ws["H8"].font = Font(name=FONT_FAMILY, size=15, bold=True, color=TEXT_MAIN)
+
     ws["J8"].value = error_traces
+    if error_traces > 0:
+        ws["J7"].fill = PatternFill(start_color=DANGER_BG, end_color=DANGER_BG, fill_type="solid")
+        ws["J7"].font = Font(name=FONT_FAMILY, size=8.5, bold=True, color=WHITE)
+        ws["J8"].fill = PatternFill(start_color=DANGER_BG, end_color=DANGER_BG, fill_type="solid")
+        ws["J8"].font = Font(name=FONT_FAMILY, size=15, bold=True, color=WHITE)
+    else:
+        ws["J8"].font = Font(name=FONT_FAMILY, size=15, bold=True, color=TEXT_MAIN)
+
     ws["L8"].value = f"{max_duration:,.1f} ms"
+    ws["L8"].font = Font(name=FONT_FAMILY, size=15, bold=True, color=TEXT_MAIN)
 
     # Fill Traces Table
     start_row = 13
@@ -264,35 +290,37 @@ def populate_summary_sheet(ws, traces_dict: Dict[str, Dict[str, Any]], metadata:
 
         # Col B: Trace ID
         c_b = ws.cell(row=row, column=2, value=trace_id)
-        c_b.font = Font(name=FONT_FAMILY, size=9)
+        c_b.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
+        c_b.number_format = '@'
         c_b.alignment = Alignment(horizontal="left", vertical="center")
         c_b.fill = fill_standard
         c_b.border = create_thin_border()
 
         # Col C: Start Time
         c_c = ws.cell(row=row, column=3, value=t_info["start_time"])
-        c_c.font = Font(name=FONT_FAMILY, size=9)
+        c_c.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
+        c_c.number_format = '@'
         c_c.alignment = Alignment(horizontal="center", vertical="center")
         c_c.fill = fill_standard
         c_c.border = create_thin_border()
 
         # Col D: Root Service
         c_d = ws.cell(row=row, column=4, value=t_info["root_service"])
-        c_d.font = Font(name=FONT_FAMILY, size=9, bold=True)
+        c_d.font = Font(name=FONT_FAMILY, size=9, bold=True, color=TEXT_MAIN)
         c_d.alignment = Alignment(horizontal="left", vertical="center")
         c_d.fill = fill_standard
         c_d.border = create_thin_border()
 
         # Col E: Root Operation
         c_e = ws.cell(row=row, column=5, value=t_info["root_op"])
-        c_e.font = Font(name=FONT_FAMILY, size=9)
+        c_e.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
         c_e.alignment = Alignment(horizontal="left", vertical="center")
         c_e.fill = fill_standard
         c_e.border = create_thin_border()
 
         # Col F: Duration
         c_f = ws.cell(row=row, column=6, value=round(t_info["total_duration_ms"], 2))
-        c_f.font = Font(name=FONT_FAMILY, size=9)
+        c_f.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
         c_f.number_format = '#,##0.00 "ms"'
         c_f.alignment = Alignment(horizontal="right", vertical="center")
         c_f.fill = fill_standard
@@ -300,43 +328,54 @@ def populate_summary_sheet(ws, traces_dict: Dict[str, Dict[str, Any]], metadata:
 
         # Col G: Spans Count
         c_g = ws.cell(row=row, column=7, value=t_info["spans_count"])
-        c_g.font = Font(name=FONT_FAMILY, size=9)
-        c_g.alignment = Alignment(horizontal="center", vertical="center")
+        c_g.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
+        c_g.number_format = '#,##0'
+        c_g.alignment = Alignment(horizontal="right", vertical="center")
         c_g.fill = fill_standard
         c_g.border = create_thin_border()
 
         # Col H: Services Count
         c_h = ws.cell(row=row, column=8, value=t_info["services_count"])
-        c_h.font = Font(name=FONT_FAMILY, size=9)
-        c_h.alignment = Alignment(horizontal="center", vertical="center")
+        c_h.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
+        c_h.number_format = '#,##0'
+        c_h.alignment = Alignment(horizontal="right", vertical="center")
         c_h.fill = fill_standard
         c_h.border = create_thin_border()
 
         # Col I: Status Badge
         c_i = ws.cell(row=row, column=9, value=status_text)
-        c_i.font = Font(name=FONT_FAMILY, size=9, bold=True, color=status_fg)
+        c_i.font = Font(name=FONT_FAMILY, size=8.5, bold=True, color=status_fg)
         c_i.alignment = Alignment(horizontal="center", vertical="center")
         c_i.fill = PatternFill(start_color=status_bg, end_color=status_bg, fill_type="solid")
         c_i.border = create_thin_border()
 
         # Col J: Error Count
         c_j = ws.cell(row=row, column=10, value=t_info["error_count"])
-        c_j.font = Font(name=FONT_FAMILY, size=9, bold=(t_info["error_count"] > 0),
-                        color=DANGER_FG if t_info["error_count"] > 0 else GRAY_TEXT)
-        c_j.alignment = Alignment(horizontal="center", vertical="center")
+        c_j.font = Font(
+            name=FONT_FAMILY,
+            size=9,
+            bold=(t_info["error_count"] > 0),
+            color=TEXT_MAIN if t_info["error_count"] > 0 else TEXT_MUTED,
+        )
+        c_j.number_format = '#,##0'
+        c_j.alignment = Alignment(horizontal="right", vertical="center")
         c_j.fill = fill_standard
         c_j.border = create_thin_border()
 
         # Col K: Link to Waterfall Sheet
         target_sheet = "Trace_Waterfall" if idx == 0 else f"Trace_{idx + 1}"
         c_k = ws.cell(row=row, column=11, value="View Timeline →")
-        c_k.font = Font(name=FONT_FAMILY, size=9, bold=True, color="0D6EFD", underline="single")
+        c_k.font = Font(name=FONT_FAMILY, size=9, bold=True, color=TEXT_MAIN, underline="single")
         c_k.hyperlink = f"#'{target_sheet}'!A1"
         c_k.alignment = Alignment(horizontal="center", vertical="center")
         c_k.fill = fill_standard
         c_k.border = create_thin_border()
 
-        ws.row_dimensions[row].height = 20
+        ws.row_dimensions[row].height = 22
+
+    if traces_dict:
+        ws.auto_filter.ref = f"B12:K{start_row + len(traces_dict) - 1}"
+    ws.freeze_panes = "B13"
 
 
 def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = "Trace_Waterfall"):
@@ -345,16 +384,21 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
 
     # Overview KPI Cards
     ws["B6"].value = trace_info["trace_id"]
+    ws["B6"].font = Font(name=FONT_FAMILY, size=10, bold=True, color=TEXT_MAIN)
     status_bg, status_fg, _, status_text = get_status_styling(trace_info["status"])
     ws["F6"].value = status_text
-    ws["F6"].font = Font(name=FONT_FAMILY, size=14, bold=True, color=status_fg)
+    ws["F6"].font = Font(name=FONT_FAMILY, size=13, bold=True, color=status_fg)
     ws["F6"].fill = PatternFill(start_color=status_bg, end_color=status_bg, fill_type="solid")
 
     root_str = f"{trace_info['root_service']} : {trace_info['root_op']}"
     ws["H6"].value = root_str
+    ws["H6"].font = Font(name=FONT_FAMILY, size=10, bold=True, color=TEXT_MAIN)
     ws["M6"].value = f"{trace_info['total_duration_ms']:,.2f} ms"
+    ws["M6"].font = Font(name=FONT_FAMILY, size=13, bold=True, color=TEXT_MAIN)
     ws["O6"].value = trace_info["spans_count"]
+    ws["O6"].font = Font(name=FONT_FAMILY, size=13, bold=True, color=TEXT_MAIN)
     ws["Q6"].value = trace_info["start_time"]
+    ws["Q6"].font = Font(name=FONT_FAMILY, size=10, bold=True, color=TEXT_MAIN)
 
     # Table rows
     start_row = 11
@@ -372,7 +416,7 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
 
         # Col B: Status
         c_status = ws.cell(row=row, column=2, value=s_label)
-        c_status.font = Font(name=FONT_FAMILY, size=8, bold=True, color=s_fg)
+        c_status.font = Font(name=FONT_FAMILY, size=8.5, bold=True, color=s_fg)
         c_status.alignment = Alignment(horizontal="center", vertical="center")
         c_status.fill = PatternFill(start_color=s_bg, end_color=s_bg, fill_type="solid")
         c_status.border = create_thin_border()
@@ -380,36 +424,36 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
         # Col C: Hierarchy & Operation
         display_name = f"{span.tree_prefix}{span.operation_name}"
         c_name = ws.cell(row=row, column=3, value=display_name)
-        c_name.font = Font(name="Consolas" if span.tree_prefix else FONT_FAMILY,
-                           size=9, bold=(span.depth == 0))
+        c_name.font = Font(name=FONT_FAMILY, size=9, bold=(span.depth == 0), color=TEXT_MAIN)
         c_name.alignment = Alignment(horizontal="left", vertical="center")
         c_name.fill = fill_standard
         c_name.border = create_thin_border()
 
         # Col D: Service
         c_svc = ws.cell(row=row, column=4, value=span.service_name)
-        c_svc.font = Font(name=FONT_FAMILY, size=9, bold=(span.depth <= 1))
+        c_svc.font = Font(name=FONT_FAMILY, size=9, bold=(span.depth <= 1), color=TEXT_MAIN)
         c_svc.alignment = Alignment(horizontal="left", vertical="center")
         c_svc.fill = fill_standard
         c_svc.border = create_thin_border()
 
         # Col E: Kind
         c_kind = ws.cell(row=row, column=5, value=span.kind or "INTERNAL")
-        c_kind.font = Font(name=FONT_FAMILY, size=8, color=GRAY_TEXT)
+        c_kind.font = Font(name=FONT_FAMILY, size=8.5, color=TEXT_MUTED)
         c_kind.alignment = Alignment(horizontal="center", vertical="center")
         c_kind.fill = fill_standard
         c_kind.border = create_thin_border()
 
         # Col F: HTTP Status
         c_http = ws.cell(row=row, column=6, value=span.http_status)
-        c_http.font = Font(name=FONT_FAMILY, size=9)
+        c_http.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
+        c_http.number_format = '@'
         c_http.alignment = Alignment(horizontal="center", vertical="center")
         c_http.fill = fill_standard
         c_http.border = create_thin_border()
 
         # Col G: Start Offset
         c_off = ws.cell(row=row, column=7, value=round(span.offset_ms, 2))
-        c_off.font = Font(name=FONT_FAMILY, size=9)
+        c_off.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
         c_off.number_format = '"+ "#,##0.00 "ms"'
         c_off.alignment = Alignment(horizontal="right", vertical="center")
         c_off.fill = fill_standard
@@ -417,7 +461,7 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
 
         # Col H: Duration
         c_dur = ws.cell(row=row, column=8, value=round(span.duration_ms, 2))
-        c_dur.font = Font(name=FONT_FAMILY, size=9, bold=True)
+        c_dur.font = Font(name=FONT_FAMILY, size=9, bold=True, color=TEXT_MAIN)
         c_dur.number_format = '#,##0.00 "ms"'
         c_dur.alignment = Alignment(horizontal="right", vertical="center")
         c_dur.fill = fill_standard
@@ -426,7 +470,7 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
         # Col I: % of Trace
         pct_share = span.duration_ms / total_dur
         c_pct = ws.cell(row=row, column=9, value=pct_share)
-        c_pct.font = Font(name=FONT_FAMILY, size=9)
+        c_pct.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
         c_pct.number_format = '0.0%'
         c_pct.alignment = Alignment(horizontal="right", vertical="center")
         c_pct.fill = fill_standard
@@ -451,7 +495,7 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
             else:
                 c_bar.fill = empty_fill
 
-        ws.row_dimensions[row].height = 20
+        ws.row_dimensions[row].height = 22
 
     # Add Native Stacked Bar Chart for Gantt visualization
     if ordered_spans:
@@ -460,7 +504,7 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
         chart.grouping = "stacked"
         chart.overlap = 100
         chart.title = f"Trace Gantt Waterfall: {trace_info['root_op']}"
-        chart.style = 10
+        chart.style = 13
         chart.height = min(18, max(8, len(ordered_spans) * 0.75 + 3))
         chart.width = 22
 
@@ -478,9 +522,12 @@ def populate_waterfall_sheet(ws, trace_info: Dict[str, Any], sheet_title: str = 
         if len(chart.series) >= 2:
             chart.series[0].graphicalProperties.noFill = True
             chart.series[0].graphicalProperties.line.noFill = True
+            chart.series[1].graphicalProperties.solidFill = "495057"
 
         chart_pos_row = start_row + len(ordered_spans) + 2
         ws.add_chart(chart, f"B{chart_pos_row}")
+
+    ws.freeze_panes = "B11"
 
 
 def populate_raw_sheet(ws, raw_rows: List[Dict[str, Any]]):
@@ -510,18 +557,27 @@ def populate_raw_sheet(ws, raw_rows: List[Dict[str, Any]]):
 
         for col_idx, val in enumerate(vals, start=1):
             cell = ws.cell(row=row, column=col_idx, value=val)
-            cell.font = Font(name=FONT_FAMILY, size=9)
+            cell.font = Font(name=FONT_FAMILY, size=9, color=TEXT_MAIN)
             cell.fill = fill_standard
-            cell.border = create_thin_border()
+            cell.border = create_thin_border(BORDER_LIGHT)
             if col_idx == 7 and isinstance(val, (int, float)):
                 cell.number_format = "#,##0.00"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
-            elif col_idx in (8, 9):
+            elif col_idx == 8 and isinstance(val, (int, float)):
+                cell.number_format = "#,##0"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            elif col_idx in (1, 9, 10, 12, 14):
+                cell.number_format = "@"
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             else:
+                cell.number_format = "@"
                 cell.alignment = Alignment(horizontal="left", vertical="center")
 
-        ws.row_dimensions[row].height = 18
+        ws.row_dimensions[row].height = 20
+
+    if raw_rows:
+        ws.auto_filter.ref = f"A4:N{start_row + len(raw_rows) - 1}"
+    ws.freeze_panes = "A5"
 
 
 def inject_report(
@@ -591,12 +647,14 @@ def inject_report(
             new_sheet_name = f"Trace_{idx}"
             if "Trace_Waterfall" in wb.sheetnames:
                 new_ws = wb.copy_worksheet(wb["Trace_Waterfall"])
+                new_ws.views.sheetView[0].showGridLines = True
                 populate_waterfall_sheet(new_ws, other_t, sheet_title=new_sheet_name)
     else:
         # No traces found
         if "Trace_Waterfall" in wb.sheetnames:
             ws_wat = wb["Trace_Waterfall"]
             ws_wat["B6"].value = "No traces matched the query criteria."
+            ws_wat["B6"].font = Font(name=FONT_FAMILY, size=11, bold=True, color=TEXT_MUTED)
 
     # 3. Populate Raw_Data Sheet
     if "Raw_Data" in wb.sheetnames:

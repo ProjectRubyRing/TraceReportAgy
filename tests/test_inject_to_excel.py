@@ -162,6 +162,38 @@ class TestInjectToExcel(unittest.TestCase):
             self.assertEqual(ws_raw.cell(row=6, column=2).value, "t-test-1")
             self.assertEqual(ws_raw.cell(row=7, column=2).value, "t-test-2")
 
+            # Validate Meiryo UI font across all sheets
+            for ws in [ws_sum, ws_wat, ws_raw]:
+                self.assertTrue(ws.views.sheetView[0].showGridLines)
+                self.assertIsNotNone(ws.freeze_panes)
+
+            # Check font family Meiryo UI on key cells
+            self.assertEqual(ws_sum["B2"].font.name, "Meiryo UI")
+            self.assertEqual(ws_sum["B12"].font.name, "Meiryo UI")
+            self.assertEqual(ws_sum["B13"].font.name, "Meiryo UI")
+            self.assertEqual(ws_wat["B2"].font.name, "Meiryo UI")
+            self.assertEqual(ws_wat["C11"].font.name, "Meiryo UI")
+            ws_trace2 = wb["Trace_2"]
+            self.assertEqual(ws_trace2["C11"].font.name, "Meiryo UI")
+            self.assertEqual(ws_trace2["C12"].font.name, "Meiryo UI")
+            self.assertEqual(ws_raw["A2"].font.name, "Meiryo UI")
+            self.assertEqual(ws_raw["A4"].font.name, "Meiryo UI")
+            self.assertEqual(ws_raw["A5"].font.name, "Meiryo UI")
+
+            # Validate Monotone color palette on headers and banners
+            self.assertEqual(ws_sum["B2"].fill.start_color.rgb[-6:], "212529")
+            self.assertEqual(ws_sum["B12"].fill.start_color.rgb[-6:], "343A40")
+            self.assertEqual(ws_wat["B2"].fill.start_color.rgb[-6:], "212529")
+            self.assertEqual(ws_wat["B10"].fill.start_color.rgb[-6:], "343A40")
+            self.assertEqual(ws_raw["A2"].fill.start_color.rgb[-6:], "212529")
+            self.assertEqual(ws_raw["A4"].fill.start_color.rgb[-6:], "343A40")
+
+            # Validate number formats
+            self.assertIn("ms", ws_sum["F13"].number_format)
+            self.assertIn("ms", ws_wat["G11"].number_format)
+            self.assertIn("ms", ws_wat["H11"].number_format)
+            self.assertEqual(ws_wat["I11"].number_format, "0.0%")
+
         finally:
             if os.path.exists(csv_path):
                 os.remove(csv_path)
